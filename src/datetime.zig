@@ -800,6 +800,22 @@ pub const Timezone = struct {
     name: []const u8,
     dst_zone: DstZones,
 
+    pub fn parseIso(tz: []const u8) !Timezone {
+        if (tz.len == 1 and tz[0] == 'Z') return .{ .offset = 0, .name = "UTC", .dst_zone = .no_dst };
+        const sign: i16 = switch (tz[0]) {
+            '+' => 1,
+            '-' => -1,
+            else => return error.InvalidFormat,
+        };
+        const hour = std.fmt.parseInt(i16, tz[1..3], 10) catch return error.InvalidFormat;
+        if (hour < 0 or hour > 24) return error.InvalidFormat;
+        const minute = std.fmt.parseInt(i16, tz[4..6], 10) catch return error.InvalidFormat;
+        if (minute < 0 or minute > 60) return error.InvalidFormat;
+
+        const offset = sign * (hour * 60 + minute);
+        return .{ .offset = offset, .name = "", .dst_zone = .no_dst };
+    }
+
     // Auto register timezones
     pub fn create(name: []const u8, offset: i16, dst_zone: DstZones) Timezone {
         const self = Timezone{ .offset = offset, .name = name, .dst_zone = dst_zone };
@@ -839,6 +855,22 @@ pub const Time = struct {
     minute: u8 = 0, // 0 to 59
     second: u8 = 0, // 0 to 59
     nanosecond: u32 = 0, // 0 to 999999999 TODO: Should this be u20?
+
+    pub fn parseIso(t: []const u8) !Time {
+        const hour = std.fmt.parseInt(u8, t[0..2], 10) catch return error.InvalidFormat;
+        if (hour > 23) return error.InvalidTime;
+        const minute = std.fmt.parseInt(u8, t[3..5], 10) catch return error.InvalidFormat;
+        if (minute > 59) return error.InvalidTime;
+        const second = std.fmt.parseInt(u8, t[6..8], 10) catch return error.InvalidFormat;
+        if (second > 59) return error.InvalidTime;
+        if (t.len < 9) return .{ .hour = hour, .minute = minute, .second = second };
+
+        const precision_len = t[9..].len;
+        const precision = std.fmt.parseInt(u32, t[9..], 10) catch return error.InvalidFormat;
+        const nanosecond = std.math.pow(u32, 10, @intCast(9 - precision_len)) * precision;
+
+        return .{ .hour = hour, .minute = minute, .second = second, .nanosecond = nanosecond };
+    }
 
     // ------------------------------------------------------------------------
     // Constructors
@@ -1152,6 +1184,17 @@ pub const Datetime = struct {
             return (days * time.s_per_day + s);
         }
     };
+
+    pub fn parseIso(dt: []const u8) !Datetime {
+        const sep = std.mem.indexOfAny(u8, dt, "T ") orelse return error.InvalidFormat;
+        const tz_sep = std.mem.indexOfAnyPos(u8, dt, sep, "+-Z") orelse return error.InvalidFormat;
+
+        return .{
+            .date = try Date.parseIso(dt[0..sep]),
+            .time = try Time.parseIso(dt[sep + 1 .. tz_sep]),
+            .zone = try Timezone.parseIso(dt[tz_sep..]),
+        };
+    }
 
     // ------------------------------------------------------------------------
     // Constructors
@@ -1506,6 +1549,17 @@ pub const Datetime = struct {
 
 test "datetime-now" {
     _ = Datetime.now();
+}
+
+test "datetime-parse-iso" {
+    const iso_string1 = "2015-13-05T12:35:45Z";
+    const iso_string2 = "2008-05-11T15:30:00.500+05:30";
+    try testing.expectError(error.InvalidDate, Datetime.parseIso(iso_string1));
+
+    const dt2 = try Datetime.parseIso(iso_string2);
+    try testing.expect(dt2.date.eql(try Date.create(2008, 5, 11)));
+    try testing.expect(dt2.time.eql(try Time.create(15, 30, 0, 500000000)));
+    try testing.expectEqualSlices(u8, dt2.zone.name, "");
 }
 
 test "datetime-create-timestamp" {
